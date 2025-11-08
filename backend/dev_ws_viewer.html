@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>VPP Live Viewer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    tr.low { background: #fff4f4; }
+    pre { max-height: 200px; overflow: auto; background:#111; color:#0f0; padding:8px; }
+  </style>
+</head>
+<body>
+  <h2>Satellite VPP — Live Viewer</h2>
+  <p>Port: <b>5001</b>. Open console for raw event logs. Below table updates every tick.</p>
+  <button id="btnState">Refresh Snapshot</button>
+  <table id="tbl">
+    <thead><tr><th>Sat</th><th>Energy</th><th>Tasks</th><th>Giving</th><th>Pos</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <h3>Drones</h3>
+<table id="tbld">
+  <thead><tr><th>ID</th><th>Status</th><th>Payload</th><th>Reserve</th><th>Target</th><th>ETA</th></tr></thead>
+  <tbody></tbody>
+</table>
+  <h3>Events</h3>
+  <pre id="log"></pre>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+  const log = (m) => {
+    const el = document.getElementById('log');
+    el.textContent = `[${new Date().toLocaleTimeString()}] ${m}\n` + el.textContent;
+  };
+
+  // If you serve the viewer via Flask (/viewer), you can also do: const BASE = '';
+  const BASE = 'http://localhost:5001';
+
+  // 1) Use default namespace and force polling (Werkzeug-friendly)
+  const socket = io(BASE, { transports: ['polling'] });
+
+  socket.on('connect', () => log('Socket.IO connected (polling)'));
+  socket.on('disconnect', () => log('Socket.IO disconnected'));
+
+  ['tick','task.assigned','task.completed','alert.low_energy',
+   'sat.energy_transfer_started','drone.launched','drone.charged']
+   .forEach(evt => socket.on(evt, payload => log(`${evt}: ${JSON.stringify(payload)}`)));
+
+  // 2) Use BASE for fetch (fixes "url is not defined")
+  async function refresh() {
+    const res = await fetch(BASE + '/api/state');
+    const data = await res.json();
+    const tbody = document.querySelector('#tbl tbody');
+    tbody.innerHTML = '';
+    (data.satellites || []).forEach(s => {
+      const tr = document.createElement('tr');
+      if (s.energy_amount < 25) tr.classList.add('low');
+      tr.innerHTML = `
+        <td>${s.satellite_id}</td>
+        <td>${s.energy_amount.toFixed(1)}</td>
+        <td>${s.current_tasks.length}</td>
+        <td>${s.giving_energy}</td>
+        <td>${s.position.lat.toFixed(1)}, ${s.position.lon.toFixed(1)}</td>`;
+      tbody.appendChild(tr);
+      const tbd = document.querySelector('#tbld tbody');
+        tbd.innerHTML = '';
+        (data.batteries || []).forEach(b => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${b.battery_id}</td>
+            <td>${b.status}</td>
+            <td>${b.battery.toFixed(1)}</td>
+            <td>${b.reserve_battery.toFixed(1)}</td>
+            <td>${b.target ? (b.target.satellite_id || (b.target.earth ? 'earth' : '')) : ''}</td>
+            <td>${b.eta_ticks || 0}</td>`;
+        tbd.appendChild(tr);
+        });
+    });
+  }
+  
+  document.getElementById('btnState').onclick = refresh;
+  socket.on('tick', refresh);
+  refresh();
+</script>
+
+</body>
+</html>

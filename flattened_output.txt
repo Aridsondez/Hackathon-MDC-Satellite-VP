@@ -1,0 +1,1260 @@
+Flattened view of: /Users/aridsondez/Desktop/MDCHACKATHON/backend
+================================================================================
+
+
+📁 Directory: .
+--------------------------------------------------------------------------------
+
+--- FILE: backend/config.py ---
+from dataclasses import dataclass
+
+@dataclass
+class Config:
+    # Simulation timing
+    TICK_MS: int = 500
+    
+    # Task delegation weights
+    LOW_WATERMARK: float = 0.25
+    HIGH_WATERMARK: float = 0.70
+    WEIGHTS: dict = None
+    DEFAULT_QPS: int = 30
+    
+    # Satellite task limits
+    MAX_TASKS_PER_SAT: int = 25
+    MIN_ENERGY_TO_ACCEPT: float = 10
+    TASK_ENERGY_RATE: float = 0.10              
+    TASK_PROGRESS_RATE: float = 0.02        
+    
+    # Drone movement & battery
+    DRONE_SPEED_KM_PER_TICK: float = 4000.0
+    DRONE_RESERVE_PER_KM: float = 0.001          # Reserve cost per km traveled
+    DRONE_RESERVE_MIN_TO_CONTINUE: float = 10.0  # Minimum reserve to continue operations
+    DRONE_RESERVE_MAX: float = 3000.0            # Maximum reserve capacity
+    DRONE_TRAVEL_INSTANT: bool = True            # Instant teleport for stability
+    DRONE_ENROUTE_MAX_TICKS: int = 8             # Max ticks before timeout recovery
+    
+    # Drone payload (charging capacity)
+    DRONE_PAYLOAD_CHARGE_RATE: float = 8.0       # Energy units transferred per tick
+    DRONE_PAYLOAD_MIN_TO_CHARGE: float = 6.0     # Minimum payload to start/continue charging
+    DRONE_PAYLOAD_MAX: float = 120.0             # Maximum payload capacity
+    PAYLOAD_CHARGE_MIN: float = 15.0        
+    # Drone harvesting (collecting from satellites)
+    DRONE_HARVEST_RATE: float = 10.0             # Energy units harvested per tick
+    HARVEST_FLOOR: float = 70.0                  # Don't harvest below this sat energy
+    HARVEST_START_LEVEL: float = 80.0            # Prefer sources above this to start
+    
+    # Satellite charging thresholds
+    SAT_FULL_EPS: float = 0.5                    # Stop charging when within eps of full
+    NEEDY_THRESH: float = 30.0                   # Satellite considered "needy" below this
+    
+    # Drone behavior limits
+    DRONE_MAX_DWELL_TICKS: int = 60              # Max ticks at one satellite before moving
+    LOOP_GUARD_MIN_PROGRESS_TICKS: int = 3       # Ticks without progress before bailout
+    
+    # Auto-dispatch settings (for equilibrium)
+    AUTO_DISPATCH_ENABLED: bool = True
+    AUTO_NEEDY_THRESH: float = 25.0              # Auto-dispatch when sat below this
+    AUTO_MAX_DRONES_PER_SAT: int = 2             # Max concurrent drones per satellite
+    
+    # Equilibrium calculation
+    EQUILIBRIUM_CHECK_INTERVAL: int = 10         # Ticks between equilibrium checks
+    EQUILIBRIUM_WINDOW_TICKS: int = 50           # Rolling window for energy trend
+    EQUILIBRIUM_DISPATCH_THRESHOLD: float = -5.0 # Net energy loss triggering dispatch
+    
+    def __post_init__(self):
+        if self.WEIGHTS is None:
+            self.WEIGHTS = dict(w1=0.35, w2=0.25, w3=0.20, w4=0.15, w5=0.05)
+
+CONFIG = Config()
+--- END OF FILE ---
+
+
+--- FILE: backend/events.py ---
+from collections import deque
+
+_EVENT_LOG = deque(maxlen=2000)
+
+def emit_event(socketio, event_type, payload):
+    rec = {"type": event_type, "payload": payload}
+    _EVENT_LOG.append(rec)
+    socketio.emit(event_type, payload)  # default namespace '/'
+
+def dump_events(limit=200):
+    # newest last
+    start = max(0, len(_EVENT_LOG) - limit)
+    return list(_EVENT_LOG)[start:]
+
+--- END OF FILE ---
+
+
+--- FILE: backend/app.py ---
+from flask import Flask
+from flask_cors import CORS
+from flask_socketio import SocketIO
+from routes.control import bp as control_bp
+from routes.smoke import bp as smoke_bp
+from routes.tasks import bp as tasks_bp
+from routes.state import bp as state_bp
+from core import scheduler
+from seeds.seed_state import seed_state
+from core import state as core_state
+from config import CONFIG as GLOBAL_CONFIG
+
+
+# Use threading mode to avoid eventlet/gevent on Python 3.13
+socketio = SocketIO(async_mode='threading', cors_allowed_origins="*")
+
+def create_app():
+    app = Flask(__name__)
+    app.register_blueprint(control_bp, url_prefix="/api")
+    app.register_blueprint(smoke_bp,   url_prefix="/api")
+    app.register_blueprint(tasks_bp,   url_prefix="/api")
+    app.register_blueprint(state_bp,   url_prefix="/api")
+    socketio.init_app(app)
+    seed_state()
+    socketio.init_app(app)
+    core_state.init_globals(GLOBAL_CONFIG, socketio)
+    seed_state()
+    scheduler.start(socketio)
+    return app
+
+app = create_app()
+CORS(app) 
+
+if __name__ == "__main__":
+    # Werkzeug dev server + simple-websocket will handle WS in threading mode
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
+
+--- END OF FILE ---
+
+
+📁 Directory: core
+--------------------------------------------------------------------------------
+
+--- FILE: backend/core/equilibrum_monitor.py ---
+from . import delegator, satellites, orchestrator_batteries
+from .equilibrium import MONITOR
+from config import CONFIG
+from events import emit_event
+import threading, time
+
+_running = False
+_thread  = None
+
+def _loop(socketio):
+    """Main simulation loop with equilibrium monitoring"""
+    tick_s = CONFIG.TICK_MS / 1000.0
+    tick_num = 0
+    
+    while _running:
+        try:
+            # Core simulation steps
+            delegator.assign_pending(socketio)
+            satellites.advance_tick(socketio)
+            orchestrator_batteries.route(socketio)
+            
+            # Monitor equilibrium
+            MONITOR.record_tick(socketio)
+            
+            # Emit tick event with basic stats
+            emit_event(socketio, "tick", {
+                "tick": tick_num,
+                "timestamp": time.time()
+            })
+            
+            tick_num += 1
+            
+        except Exception as e:
+            # Keep sim alive on transient errors
+            print(f"[scheduler] tick {tick_num} error:", e)
+            import traceback
+            traceback.print_exc()
+        
+        time.sleep(tick_s)
+
+def start(socketio):
+    """Start the simulation scheduler"""
+    global _running, _thread
+    if _running:
+        print("[scheduler] Already running")
+        return
+    
+    print("[scheduler] Starting simulation loop...")
+    _running = True
+    _thread = threading.Thread(target=_loop, args=(socketio,), daemon=True)
+    _thread.start()
+    print("[scheduler] ✓ Simulation started")
+
+def stop():
+    """Stop the simulation scheduler"""
+    global _running
+    if not _running:
+        return
+    
+    print("[scheduler] Stopping simulation loop...")
+    _running = False
+    if _thread:
+        _thread.join(timeout=2.0)
+    print("[scheduler] ✓ Simulation stopped")
+--- END OF FILE ---
+
+
+--- FILE: backend/core/equilibrium.py ---
+"""
+Equilibrium Monitor - Tracks system energy balance and recommends drone fleet size
+
+Monitors:
+- Total satellite energy trends
+- Energy consumption vs generation rates
+- Drone utilization and efficiency
+- Recommends optimal drone count for equilibrium
+"""
+
+from collections import deque
+from . import state
+from config import CONFIG
+from events import emit_event
+
+class EquilibriumMonitor:
+    def __init__(self):
+        self.energy_history = deque(maxlen=CONFIG.EQUILIBRIUM_WINDOW_TICKS)
+        self.tick_count = 0
+        self.last_recommendation = None
+    
+    def record_tick(self, socketio):
+        """Record current system state"""
+        with state.LOCK:
+            # Calculate total system energy
+            total_energy = sum(s.energy_amount for s in state.SATELLITES.values())
+            total_capacity = sum(s.max_energy for s in state.SATELLITES.values())
+            
+            # Count active drones
+            active_drones = sum(1 for d in state.BATTERIES.values() 
+                              if d.status in ("charging", "enroute", "harvesting"))
+            idle_drones = sum(1 for d in state.BATTERIES.values() 
+                            if d.status in ("at_earth", "standby"))
+            
+            # Record state
+            self.energy_history.append({
+                "tick": self.tick_count,
+                "total_energy": total_energy,
+                "capacity": total_capacity,
+                "utilization": total_energy / max(total_capacity, 1),
+                "active_drones": active_drones,
+                "idle_drones": idle_drones
+            })
+            
+            self.tick_count += 1
+            
+            # Check equilibrium periodically
+            if self.tick_count % CONFIG.EQUILIBRIUM_CHECK_INTERVAL == 0:
+                self._check_equilibrium(socketio)
+    
+    def _check_equilibrium(self, socketio):
+        """Analyze trends and emit recommendations"""
+        if len(self.energy_history) < 10:
+            return  # Need more data
+        
+        with state.LOCK:
+            # Calculate energy trend
+            recent = list(self.energy_history)[-10:]
+            oldest = recent[0]["total_energy"]
+            newest = recent[-1]["total_energy"]
+            trend = newest - oldest
+            
+            # Calculate average utilization
+            avg_util = sum(r["utilization"] for r in recent) / len(recent)
+            
+            # Count satellites below threshold
+            critical_sats = sum(1 for s in state.SATELLITES.values() 
+                              if s.energy_amount < CONFIG.AUTO_NEEDY_THRESH)
+            
+            # Current drone count
+            total_drones = len(state.BATTERIES)
+            active = recent[-1]["active_drones"]
+            idle = recent[-1]["idle_drones"]
+            
+            # Determine recommendation
+            recommendation = self._calculate_drone_need(
+                trend, avg_util, critical_sats, total_drones, active, idle
+            )
+            
+            if recommendation != self.last_recommendation:
+                self.last_recommendation = recommendation
+                emit_event(socketio, "equilibrium.update", {
+                    "tick": self.tick_count,
+                    "energy_trend": trend,
+                    "avg_utilization": avg_util,
+                    "critical_satellites": critical_sats,
+                    "active_drones": active,
+                    "idle_drones": idle,
+                    "total_drones": total_drones,
+                    "recommendation": recommendation,
+                    "status": self._get_status(trend, avg_util, critical_sats)
+                })
+    
+    def _calculate_drone_need(self, trend, avg_util, critical_sats, total, active, idle):
+        """Calculate recommended drone count for equilibrium"""
+        
+        # Severe energy loss - need more drones
+        if trend < CONFIG.EQUILIBRIUM_DISPATCH_THRESHOLD * 2:
+            needed = total + 2
+            return {
+                "action": "add_drones",
+                "count": 2,
+                "total_needed": needed,
+                "reason": "severe_energy_loss"
+            }
+        
+        # Moderate energy loss - need 1 more drone
+        if trend < CONFIG.EQUILIBRIUM_DISPATCH_THRESHOLD:
+            needed = total + 1
+            return {
+                "action": "add_drones",
+                "count": 1,
+                "total_needed": needed,
+                "reason": "moderate_energy_loss"
+            }
+        
+        # Critical satellites exist but drones are idle - deployment issue
+        if critical_sats > 0 and idle > 0:
+            return {
+                "action": "dispatch_idle",
+                "reason": "critical_satellites_with_idle_drones"
+            }
+        
+        # System stable, high utilization - maintain current
+        if 0.4 <= avg_util <= 0.7 and abs(trend) < 5:
+            return {
+                "action": "maintain",
+                "reason": "equilibrium_achieved"
+            }
+        
+        # Excess drones (all idle, energy rising)
+        if idle > 1 and trend > 10 and avg_util > 0.8:
+            return {
+                "action": "reduce_drones",
+                "count": 1,
+                "reason": "excess_capacity"
+            }
+        
+        # Default: maintain current
+        return {
+            "action": "maintain",
+            "reason": "monitoring"
+        }
+    
+    def _get_status(self, trend, avg_util, critical_sats):
+        """Get overall system status"""
+        if critical_sats > 2 or trend < -10:
+            return "critical"
+        elif critical_sats > 0 or trend < -5:
+            return "warning"
+        elif abs(trend) < 3 and 0.4 <= avg_util <= 0.7:
+            return "equilibrium"
+        else:
+            return "stable"
+
+# Global monitor instance
+MONITOR = EquilibriumMonitor()
+--- END OF FILE ---
+
+
+--- FILE: backend/core/models.py ---
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict
+import uuid, random, time
+
+def uid(prefix): return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+class Task(BaseModel):
+    task_id: str = Field(default_factory=lambda: uid("task"))
+    energy_need: float
+    processing_power_needed: float
+    priority: str
+    created_at: float = Field(default_factory=time.time)
+
+class Satellite(BaseModel):
+    satellite_id: str = Field(default_factory=lambda: uid("sat"))
+    energy_amount: float                                 # current energy (0..max_energy)
+    max_energy: float = 120.0                            # battery capacity cap
+    # processing
+    processing_capacity: float
+    current_tasks: List[Dict] = Field(default_factory=list)
+    # solar
+    solar_gen_rate: float = 0.35                         # energy units per tick at full sun
+    # misc
+    position: Dict[str, float] = Field(default_factory=lambda: {
+        "lat": random.uniform(-60, 60), "lon": random.uniform(-180, 180)
+    })
+    giving_energy: str = "idle"
+
+class Battery(BaseModel):
+    battery_id: str = Field(default_factory=lambda: uid("bat"))
+    reserve_battery: float
+    battery: float
+    position: Dict[str, float] = Field(default_factory=lambda: {"lat":0,"lon":0,"alt":0})
+    status: str = "standby"
+    speed_km_per_tick: float = 4000
+    target: Optional[Dict[str, str]] = None
+    eta_ticks: int = 0
+    route: List[str] = Field(default_factory=list) 
+    home_base: Dict[str, float] = Field(default_factory=lambda: {"lat":0.0,"lon":0.0,"alt":0.0})
+    dwell_ticks: int = 0   
+--- END OF FILE ---
+
+
+--- FILE: backend/core/orchestrator_batteries.py ---
+"""
+Drone Orchestrator - Manages battery drone fleet for satellite energy equilibrium
+
+Key behaviors:
+- Auto-dispatch: Drones automatically deploy to low-energy satellites
+- Charging: Multiple drones can charge one satellite (up to AUTO_MAX_DRONES_PER_SAT)
+- No siphoning: Drones won't harvest from satellites being charged
+- Mission completion: Drones leave after charging and find new targets
+- Recharge: Drones return to Earth or harvest from high-energy satellites
+- Reserve management: Drone movement consumes reserve battery
+- Timeout recovery: Drones stuck enroute return to Earth
+"""
+
+from . import state
+from config import CONFIG
+from events import emit_event
+from utils.geo import haversine_km
+
+def _nearest_satellite(from_lat, from_lon, candidates):
+    """Find nearest satellite from given position"""
+    best, bestd = None, 1e18
+    for s in candidates:
+        d = haversine_km(from_lat, from_lon, s.position["lat"], s.position["lon"])
+        if d < bestd: 
+            best, bestd = s, d
+    return best, bestd
+
+def _reserve_cost_km(km):
+    """Calculate reserve battery cost for distance"""
+    return km * CONFIG.DRONE_RESERVE_PER_KM
+
+def _can_reach(drone, lat, lon, reserve_min=None):
+    """Check if drone has enough reserve to reach destination"""
+    if reserve_min is None:
+        reserve_min = CONFIG.DRONE_RESERVE_MIN_TO_CONTINUE
+    dkm = haversine_km(drone.position["lat"], drone.position["lon"], lat, lon)
+    need = _reserve_cost_km(dkm)
+    return drone.reserve_battery >= need + reserve_min
+
+def _set_course(drone, lat, lon, label=None):
+    """Set drone course to destination"""
+    drone.speed_km_per_tick = CONFIG.DRONE_SPEED_KM_PER_TICK
+    
+    # Calculate and pay reserve cost
+    dkm = haversine_km(drone.position["lat"], drone.position["lon"], lat, lon)
+    cost = _reserve_cost_km(dkm)
+    drone.reserve_battery -= cost
+    
+    # Set travel mode
+    if CONFIG.DRONE_TRAVEL_INSTANT:
+        drone.eta_ticks = 0
+    else:
+        ticks = max(1, int(dkm / max(drone.speed_km_per_tick, 1)))
+        drone.eta_ticks = ticks
+    
+    drone.dwell_ticks = 0
+    drone._enroute_ticks = 0
+    
+    if label:
+        emit_event(state.SOCKETIO, "drone.enroute", {
+            "battery_id": drone.battery_id, 
+            "eta": drone.eta_ticks, 
+            "to": label
+        })
+
+def _arrive_at(drone, lat, lon):
+    """Handle drone arrival at destination"""
+    drone.position["lat"] = lat
+    drone.position["lon"] = lon
+    drone.eta_ticks = 0
+    drone.dwell_ticks = 0
+    drone._enroute_ticks = 0
+
+def _release_current_claim(drone):
+    """Release satellite claim when leaving"""
+    if drone.target and "satellite_id" in drone.target:
+        state.release_sat(drone.target["satellite_id"], drone.battery_id)
+
+def _tick_travel(drone, dest_position):
+    """Advance drone travel, return True if arrived, 'timeout' if stuck"""
+    if CONFIG.DRONE_TRAVEL_INSTANT:
+        _arrive_at(drone, dest_position["lat"], dest_position["lon"])
+        return True
+    
+    if drone.eta_ticks > 0:
+        drone.eta_ticks -= 1
+        drone._enroute_ticks = getattr(drone, "_enroute_ticks", 0) + 1
+        
+        # Check for timeout
+        if drone._enroute_ticks >= CONFIG.DRONE_ENROUTE_MAX_TICKS:
+            return "timeout"
+        
+        if drone.eta_ticks == 0:
+            _arrive_at(drone, dest_position["lat"], dest_position["lon"])
+            return True
+    
+    return False
+
+def _find_charging_target(drone):
+    """Find the best satellite to charge (lowest energy, not being charged by multiple drones)"""
+    candidates = []
+    
+    for s in state.SATELLITES.values():
+        # Skip if at full capacity
+        if s.energy_amount >= s.max_energy - CONFIG.SAT_FULL_EPS:
+            continue
+        
+        # Check if we can reach it
+        if not _can_reach(drone, s.position["lat"], s.position["lon"]):
+            continue
+        
+        # Count how many drones are already charging this satellite
+        charging_count = 0
+        for b in state.BATTERIES.values():
+            if b.battery_id != drone.battery_id and b.status == "charging" and \
+               b.target and b.target.get("satellite_id") == s.satellite_id:
+                charging_count += 1
+        
+        # Skip if already at max concurrent chargers
+        if charging_count >= CONFIG.AUTO_MAX_DRONES_PER_SAT:
+            continue
+        
+        candidates.append((s, charging_count))
+    
+    if not candidates:
+        return None
+    
+    # Sort by energy (lowest first), then by charging count (prefer less crowded)
+    candidates.sort(key=lambda x: (x[0].energy_amount, x[1]))
+    return candidates[0][0]
+
+def _find_harvest_source(drone):
+    """Find best satellite to harvest from (highest energy above threshold, not being siphoned)"""
+    candidates = []
+    
+    for s in state.SATELLITES.values():
+        # Must be above harvest start level
+        if s.energy_amount < CONFIG.HARVEST_START_LEVEL:
+            continue
+        
+        # Check if we can reach it
+        if not _can_reach(drone, s.position["lat"], s.position["lon"]):
+            continue
+        
+        # Don't harvest from satellites being charged
+        being_charged = False
+        for b in state.BATTERIES.values():
+            if b.status == "charging" and b.target and \
+               b.target.get("satellite_id") == s.satellite_id:
+                being_charged = True
+                break
+        
+        if being_charged:
+            continue
+        
+        # Don't allow multiple drones to harvest from same satellite
+        harvesting_count = 0
+        for b in state.BATTERIES.values():
+            if b.battery_id != drone.battery_id and b.status == "harvesting" and \
+               b.target and b.target.get("satellite_id") == s.satellite_id:
+                harvesting_count += 1
+        
+        if harvesting_count > 0:
+            continue
+        
+        candidates.append(s)
+    
+    if not candidates:
+        return None
+    
+    # Return highest energy satellite
+    return max(candidates, key=lambda s: s.energy_amount)
+
+def _should_go_to_earth(drone):
+    """Determine if drone should return to Earth for recharge"""
+    # Low payload and low reserve - must go to Earth
+    if drone.battery < CONFIG.PAYLOAD_CHARGE_MIN and \
+       drone.reserve_battery < CONFIG.DRONE_RESERVE_MIN_TO_CONTINUE * 2:
+        return True
+    
+    # Payload is low - need to refill
+    if drone.battery < CONFIG.PAYLOAD_CHARGE_MIN:
+        # Check if any satellite can provide enough energy
+        harvest_source = _find_harvest_source(drone)
+        if harvest_source:
+            return False  # Can harvest from satellite
+        return True  # Must go to Earth
+    
+    return False
+
+def _choose_next_mission(drone):
+    """Decide drone's next mission: charge satellite, harvest, or return to Earth"""
+    
+    # First check if we need to go to Earth
+    if _should_go_to_earth(drone):
+        _release_current_claim(drone)
+        drone.status = "returning"
+        drone.target = {"earth": True}
+        _set_course(drone, drone.home_base["lat"], drone.home_base["lon"], label="earth")
+        return
+    
+    # If we have payload, prioritize charging
+    if drone.battery >= CONFIG.PAYLOAD_CHARGE_MIN:
+        target = _find_charging_target(drone)
+        if target and state.try_claim_sat(target.satellite_id, drone.battery_id):
+            drone.status = "enroute"
+            drone.target = {"satellite_id": target.satellite_id}
+            _set_course(drone, target.position["lat"], target.position["lon"], label=target.satellite_id)
+            return
+    
+    # Otherwise, try to harvest
+    target = _find_harvest_source(drone)
+    if target and state.try_claim_sat(target.satellite_id, drone.battery_id):
+        drone.status = "enroute"
+        drone.target = {"satellite_id": target.satellite_id}
+        _set_course(drone, target.position["lat"], target.position["lon"], label=target.satellite_id)
+        return
+    
+    # No mission available, return to Earth
+    _release_current_claim(drone)
+    drone.status = "returning"
+    drone.target = {"earth": True}
+    _set_course(drone, drone.home_base["lat"], drone.home_base["lon"], label="earth")
+
+def _auto_dispatch():
+    """Automatically dispatch idle drones to needy satellites"""
+    if not CONFIG.AUTO_DISPATCH_ENABLED:
+        return
+    
+    # Find satellites below threshold
+    needy = [s for s in state.SATELLITES.values() 
+             if s.energy_amount < CONFIG.AUTO_NEEDY_THRESH]
+    
+    if not needy:
+        return
+    
+    # Sort by energy (lowest first)
+    needy.sort(key=lambda s: s.energy_amount)
+    
+    # Find available drones
+    available_drones = [b for b in state.BATTERIES.values() 
+                       if b.status in ("at_earth", "standby") and 
+                       b.battery >= CONFIG.PAYLOAD_CHARGE_MIN]
+    
+    # Dispatch drones to needy satellites
+    for sat in needy:
+        if not available_drones:
+            break
+        
+        # Check how many drones already targeting this satellite
+        targeting_count = sum(1 for b in state.BATTERIES.values() 
+                            if b.target and b.target.get("satellite_id") == sat.satellite_id)
+        
+        if targeting_count >= CONFIG.AUTO_MAX_DRONES_PER_SAT:
+            continue
+        
+        # Find closest available drone
+        closest_drone = None
+        closest_dist = 1e18
+        
+        for drone in available_drones:
+            if not _can_reach(drone, sat.position["lat"], sat.position["lon"]):
+                continue
+            
+            dist = haversine_km(drone.position["lat"], drone.position["lon"],
+                              sat.position["lat"], sat.position["lon"])
+            if dist < closest_dist:
+                closest_drone = drone
+                closest_dist = dist
+        
+        if closest_drone and state.try_claim_sat(sat.satellite_id, closest_drone.battery_id):
+            closest_drone.status = "enroute"
+            closest_drone.target = {"satellite_id": sat.satellite_id}
+            _set_course(closest_drone, sat.position["lat"], sat.position["lon"], 
+                       label=sat.satellite_id)
+            available_drones.remove(closest_drone)
+            
+            emit_event(state.SOCKETIO, "drone.auto_dispatched", {
+                "battery_id": closest_drone.battery_id,
+                "satellite_id": sat.satellite_id,
+                "reason": "low_energy"
+            })
+
+def route(socketio):
+    """Main drone orchestration loop"""
+    with state.LOCK:
+        # Auto-dispatch idle drones first
+        _auto_dispatch()
+        
+        for drone in state.BATTERIES.values():
+            if drone.status == "out_of_service":
+                continue
+            
+            # Handle travel states
+            if drone.status in ("enroute", "returning"):
+                if drone.target and drone.target.get("earth"):
+                    # Traveling to Earth
+                    result = _tick_travel(drone, drone.home_base)
+                    if result == True:
+                        # Arrived at Earth - full recharge
+                        drone.status = "at_earth"
+                        drone.battery = CONFIG.DRONE_PAYLOAD_MAX
+                        drone.reserve_battery = CONFIG.DRONE_RESERVE_MAX
+                        drone.target = None
+                        emit_event(socketio, "drone.recharged", {
+                            "battery_id": drone.battery_id
+                        })
+                        # Immediately look for next mission
+                        _choose_next_mission(drone)
+                    elif result == "timeout":
+                        # Stuck enroute - force return to Earth
+                        _release_current_claim(drone)
+                        drone.status = "returning"
+                        drone.target = {"earth": True}
+                        drone.position = drone.home_base.copy()  # Teleport to Earth
+                        drone.battery = CONFIG.DRONE_PAYLOAD_MAX
+                        drone.reserve_battery = CONFIG.DRONE_RESERVE_MAX
+                        emit_event(socketio, "drone.timeout_recovery", {
+                            "battery_id": drone.battery_id
+                        })
+                    continue
+                
+                elif drone.target and "satellite_id" in drone.target:
+                    # Traveling to satellite
+                    sat = state.SATELLITES.get(drone.target["satellite_id"])
+                    if not sat:
+                        _release_current_claim(drone)
+                        _choose_next_mission(drone)
+                        continue
+                    
+                    result = _tick_travel(drone, sat.position)
+                    if result == True:
+                        # Arrived at satellite - determine mode
+                        if drone.battery >= CONFIG.PAYLOAD_CHARGE_MIN and \
+                           sat.energy_amount < sat.max_energy - CONFIG.SAT_FULL_EPS:
+                            drone.status = "charging"
+                            drone.dwell_ticks = 0
+                            emit_event(socketio, "drone.charging_start", {
+                                "battery_id": drone.battery_id,
+                                "satellite_id": sat.satellite_id
+                            })
+                        elif sat.energy_amount >= CONFIG.HARVEST_START_LEVEL:
+                            drone.status = "harvesting"
+                            drone.dwell_ticks = 0
+                            emit_event(socketio, "drone.harvesting_start", {
+                                "battery_id": drone.battery_id,
+                                "satellite_id": sat.satellite_id
+                            })
+                        else:
+                            # Satellite not suitable - find new mission
+                            _release_current_claim(drone)
+                            _choose_next_mission(drone)
+                    elif result == "timeout":
+                        # Stuck enroute - return to Earth
+                        _release_current_claim(drone)
+                        drone.status = "returning"
+                        drone.target = {"earth": True}
+                        drone.position = drone.home_base.copy()  # Teleport to Earth
+                        drone.battery = CONFIG.DRONE_PAYLOAD_MAX
+                        drone.reserve_battery = CONFIG.DRONE_RESERVE_MAX
+                        emit_event(socketio, "drone.timeout_recovery", {
+                            "battery_id": drone.battery_id
+                        })
+                    continue
+            
+            # Handle charging mode
+            if drone.status == "charging":
+                if not drone.target or "satellite_id" not in drone.target:
+                    _choose_next_mission(drone)
+                    continue
+                
+                sat = state.SATELLITES.get(drone.target["satellite_id"])
+                if not sat:
+                    _release_current_claim(drone)
+                    _choose_next_mission(drone)
+                    continue
+                
+                drone.dwell_ticks += 1
+                
+                # Check if we should stop charging
+                sat_full = sat.energy_amount >= sat.max_energy - CONFIG.SAT_FULL_EPS
+                payload_empty = drone.battery < CONFIG.PAYLOAD_CHARGE_MIN
+                max_dwell = drone.dwell_ticks >= CONFIG.DRONE_MAX_DWELL_TICKS
+                
+                if sat_full or payload_empty or max_dwell:
+                    # Done charging - release and find new mission
+                    emit_event(socketio, "drone.charging_complete", {
+                        "battery_id": drone.battery_id,
+                        "satellite_id": sat.satellite_id,
+                        "reason": "full" if sat_full else "empty" if payload_empty else "max_dwell"
+                    })
+                    _release_current_claim(drone)
+                    _choose_next_mission(drone)
+                    continue
+                
+                # Transfer energy
+                deficit = sat.max_energy - sat.energy_amount
+                give = min(CONFIG.DRONE_PAYLOAD_CHARGE_RATE, drone.battery, deficit)
+                
+                if give > 0:
+
+[... truncated 56 lines ...]
+
+--- END OF FILE ---
+
+
+--- FILE: backend/core/satellites.py ---
+from . import state
+from config import CONFIG
+from events import emit_event
+import math, time
+
+def _daylight_factor(lat, lon, now_s):
+    """
+    Toy daylight model:
+    local solar time ≈ UTC hours + lon/15.
+    Daylight 06:00–18:00; cosine ramp to 0 at night.
+    """
+    hrs = (now_s/3600.0 + lon/15.0) % 24.0
+    if 6.0 <= hrs <= 18.0:
+        # map 6->0, 12->1, 18->0 via cosine
+        x = (hrs - 12.0) / 6.0   # -1..+1
+        return max(0.0, math.cos(x * math.pi/2.0))  # 0..1
+    return 0.0
+
+def advance_tick(socketio):
+    now = time.time()
+    with state.LOCK:
+        for s in state.SATELLITES.values():
+            # 1) Solar generation
+            lat, lon = s.position["lat"], s.position["lon"]
+            k = _daylight_factor(lat, lon, now)
+            gen = s.solar_gen_rate 
+            if gen > 0:
+                s.energy_amount = min(s.max_energy, s.energy_amount + gen)
+
+            # 2) Process tasks: consume only while working
+            completed = []
+            for t in s.current_tasks:
+                # energy burn per task this tick
+                need = min(CONFIG.TASK_ENERGY_RATE, t["remaining_energy"])
+                # if no energy to burn, the task stalls (very slow crawl)
+                if s.energy_amount >= need and need > 0:
+                    s.energy_amount -= need
+                    t["remaining_energy"] -= need
+                    eff = 1.0
+                else:
+                    eff = 0.2  # starved, crawl
+
+                # progress update
+                t["progress"] = min(1.0, t["progress"] + CONFIG.TASK_PROGRESS_RATE * eff)
+
+                if t["progress"] >= 1.0 or t["remaining_energy"] <= 0.0:
+                    completed.append(t)
+
+            for t in completed:
+                s.current_tasks.remove(t)
+                tid = t["task_id"]
+                state.ASSIGNED.pop(tid, None)
+                emit_event(socketio, "task.completed",
+                           {"task_id": tid, "satellite_id": s.satellite_id})
+
+            # 3) Alerts
+            if s.energy_amount < 10.0:
+                emit_event(socketio, "alert.low_energy",
+                           {"satellite_id": s.satellite_id, "energy": s.energy_amount})
+
+--- END OF FILE ---
+
+
+--- FILE: backend/core/delegator.py ---
+from . import state
+from config import CONFIG
+from events import emit_event
+
+def _score(s, task):
+    # Must have some energy and not be at cap
+    if s.energy_amount < CONFIG.MIN_ENERGY_TO_ACCEPT: return -1e9
+    if len(s.current_tasks) >= CONFIG.MAX_TASKS_PER_SAT: return -1e9
+
+    e = s.energy_amount / max(s.max_energy, 1.0)
+    spare = max(s.processing_capacity - task.processing_power_needed, 0) / max(s.processing_capacity, 1.0)
+    qpen = len(s.current_tasks) * 0.15
+    pr = {"low":0.0, "medium":0.5, "high":1.0}.get(task.priority, 0.0)
+    W = CONFIG.WEIGHTS
+    base = W["w1"]*e + W["w2"]*spare + W["w5"]*pr
+    return base - qpen
+
+def assign_pending(socketio):
+    with state.LOCK:
+        while state.TASK_QUEUE:
+            task = state.TASK_QUEUE[0]
+            best = None; bestScore = -1e9
+            for s in state.SATELLITES.values():
+                sc = _score(s, task)
+                if sc > bestScore:
+                    best = s; bestScore = sc
+            if not best or bestScore < -1e8:
+                # nobody can accept now; stop trying this tick
+                break
+
+            state.TASK_QUEUE.popleft()
+            best.current_tasks.append({
+                "task_id": task.task_id,
+                "remaining_energy": float(task.energy_need),
+                "progress": 0.0,
+                "pp_need": float(task.processing_power_needed),
+                "priority": task.priority
+            })
+            state.ASSIGNED[task.task_id] = best.satellite_id
+            emit_event(socketio, "task.assigned",
+                       {"task_id":task.task_id,"satellite_id":best.satellite_id})
+
+--- END OF FILE ---
+
+
+--- FILE: backend/core/scheduler.py ---
+from . import delegator, satellites, orchestrator_batteries
+from config import CONFIG
+from events import emit_event
+import threading, time
+
+_running = False
+_thread  = None
+
+def _loop(socketio):
+    tick_s = CONFIG.TICK_MS / 1000.0
+    while _running:
+        try:
+            delegator.assign_pending(socketio)
+            satellites.advance_tick(socketio)
+            orchestrator_batteries.route(socketio)
+            emit_event(socketio, "tick", {})
+        except Exception as e:
+            # keep sim alive on transient errors
+            print("[scheduler] tick error:", e)
+        time.sleep(tick_s)
+
+def start(socketio):
+    global _running, _thread
+    if _running: return
+    _running = True
+    _thread = threading.Thread(target=_loop, args=(socketio,), daemon=True)
+    _thread.start()
+
+--- END OF FILE ---
+
+
+--- FILE: backend/core/state.py ---
+from collections import deque
+from threading import RLock
+from typing import Dict
+from .models import Satellite, Battery, Task
+
+LOCK = RLock()
+SATELLITES: Dict[str, Satellite] = {}
+BATTERIES: Dict[str, Battery] = {}
+TASK_QUEUE = deque()
+ASSIGNED: Dict[str, str] = {}
+CONFIG = None
+SOCKETIO = None
+SAT_CLAIM: dict[str, str] = {}  
+
+def snapshot():
+    with LOCK:
+        return dict(
+            satellites=[s.model_dump() for s in SATELLITES.values()],
+            batteries=[b.model_dump() for b in BATTERIES.values()],
+            queue=[t.model_dump() for t in list(TASK_QUEUE)],
+            assigned=ASSIGNED.copy()
+        )
+def init_globals(config, socketio):
+    global CONFIG, SOCKETIO
+    CONFIG = config
+    SOCKETIO = socketio
+
+def try_claim_sat(sat_id: str, battery_id: str) -> bool:
+    owner = SAT_CLAIM.get(sat_id)
+    if owner is None or owner == battery_id:
+        SAT_CLAIM[sat_id] = battery_id
+        return True
+    return False
+
+def release_sat(sat_id: str, battery_id: str) -> None:
+    if SAT_CLAIM.get(sat_id) == battery_id:
+        del SAT_CLAIM[sat_id]
+--- END OF FILE ---
+
+
+--- FILE: backend/core/smoke_consumer.py ---
+import random, threading, time
+from .models import Task
+from . import state
+
+_running = False
+_thread  = None
+
+def _loop(qps, burst):
+    global _running
+    period = 1.0 / max(qps, 1)
+    while _running:
+        n = random.randint(1, max(burst,1))
+        with state.LOCK:
+            for _ in range(n):
+                t = Task(
+                    energy_need=random.randint(5,15),
+                    processing_power_needed=random.randint(500,2000),
+                    priority=random.choice(["low","medium","high"])
+                )
+                state.TASK_QUEUE.append(t)
+        time.sleep(period)
+
+def start_smoke(qps=30, burst=10):
+    global _running, _thread
+    if _running: return
+    _running = True
+    _thread = threading.Thread(target=_loop, args=(qps, burst), daemon=True)
+    _thread.start()
+
+def stop_smoke():
+    global _running
+    _running = False
+
+--- END OF FILE ---
+
+
+📁 Directory: utils
+--------------------------------------------------------------------------------
+
+--- FILE: backend/utils/geo.py ---
+import math
+
+EARTH_RADIUS_KM = 6371.0
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    rlat1, rlon1 = math.radians(lat1), math.radians(lon1)
+    rlat2, rlon2 = math.radians(lat2), math.radians(lon2)
+    dlat = rlat2 - rlat1
+    dlon = rlon2 - rlon1
+    a = math.sin(dlat/2)**2 + math.cos(rlat1)*math.cos(rlat2)*math.sin(dlon/2)**2
+    c = 2*math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return EARTH_RADIUS_KM * c
+
+--- END OF FILE ---
+
+
+--- FILE: backend/utils/time.py ---
+
+--- END OF FILE ---
+
+
+--- FILE: backend/utils/ids.py ---
+
+--- END OF FILE ---
+
+
+📁 Directory: seeds
+--------------------------------------------------------------------------------
+
+--- FILE: backend/seeds/seed_state.py ---
+from core.models import Satellite, Battery
+from core import state
+from config import CONFIG
+import random
+
+def seed_state():
+    """Initialize simulation with satellites and 2 standby drones"""
+    
+    # Create satellites with varied energy levels
+    sats = [
+        Satellite(
+            energy_amount=90, 
+            max_energy=120,
+            processing_capacity=2500, 
+            solar_gen_rate=0.45
+        ),
+        Satellite(
+            energy_amount=65, 
+            max_energy=120,
+            processing_capacity=1800, 
+            solar_gen_rate=0.35
+        ),
+        Satellite(
+            energy_amount=40, 
+            max_energy=120,
+            processing_capacity=2200, 
+            solar_gen_rate=0.40
+        ),
+        Satellite(
+            energy_amount=75, 
+            max_energy=120,
+            processing_capacity=2000, 
+            solar_gen_rate=0.38
+        ),
+    ]
+    
+    # Randomize satellite positions
+    for s in sats:
+        s.position["lon"] = random.uniform(-180, 180)
+        s.position["lat"] = random.uniform(-60, 60)
+    
+    # Create 2 standby drones at Earth (ready for auto-dispatch)
+    bats = [
+        Battery(
+            reserve_battery=CONFIG.DRONE_RESERVE_MAX,
+            battery=CONFIG.DRONE_PAYLOAD_MAX,
+            speed_km_per_tick=CONFIG.DRONE_SPEED_KM_PER_TICK,
+            status="at_earth",
+            position={"lat": 0.0, "lon": 0.0, "alt": 0.0},
+            home_base={"lat": 0.0, "lon": 0.0, "alt": 0.0}
+        ),
+        Battery(
+            reserve_battery=CONFIG.DRONE_RESERVE_MAX,
+            battery=CONFIG.DRONE_PAYLOAD_MAX,
+            speed_km_per_tick=CONFIG.DRONE_SPEED_KM_PER_TICK,
+            status="at_earth",
+            position={"lat": 0.0, "lon": 0.0, "alt": 0.0},
+            home_base={"lat": 0.0, "lon": 0.0, "alt": 0.0}
+        ),
+    ]
+    
+    # Clear and populate state
+    with state.LOCK:
+        state.SATELLITES.clear()
+        state.BATTERIES.clear()
+        state.TASK_QUEUE.clear()
+        state.ASSIGNED.clear()
+        state.SAT_CLAIM.clear()
+        
+        for s in sats:
+            state.SATELLITES[s.satellite_id] = s
+        
+        for b in bats:
+            state.BATTERIES[b.battery_id] = b
+    
+    print(f"✓ Seeded {len(sats)} satellites and {len(bats)} standby drones")
+--- END OF FILE ---
+
+
+📁 Directory: routes
+--------------------------------------------------------------------------------
+
+--- FILE: backend/routes/tasks.py ---
+from flask import Blueprint, request, jsonify
+from core.models import Task
+from core import state
+from core.state import snapshot
+
+bp = Blueprint("tasks", __name__)
+
+@bp.post("/tasks")
+def create_task():
+    data = request.get_json(force=True)
+    t = Task(**data)
+    with state.LOCK:
+        state.TASK_QUEUE.append(t)
+    return jsonify(t.model_dump())
+
+@bp.get("/state")
+def get_state():
+    return jsonify(snapshot())
+--- END OF FILE ---
+
+
+--- FILE: backend/routes/control.py ---
+from core import state
+from core.models import Battery
+from utils.geo import haversine_km
+from events import emit_event
+from flask import jsonify, request, Blueprint
+
+bp = Blueprint("control", __name__)
+
+@bp.post("/drones/launch")
+def launch():
+    """
+    body: { "count": 1, "target_satellite_id": "sat-..." }
+    Launches 'count' drones from Earth, aiming first at target_satellite_id.
+    """
+    data = request.get_json(force=True)
+    count = int(data.get("count", 1))
+    target = data.get("target_satellite_id")
+    with state.LOCK:
+        sat = state.SATELLITES.get(target)
+        if not sat:
+            return jsonify({"error":"target satellite not found"}), 404
+        launched = []
+        for _ in range(count):
+            # pick an available or create a new drone at Earth
+            drone = None
+            for b in state.BATTERIES.values():
+                if b.status == "at_earth":
+                    drone = b; break
+            if not drone:
+                drone = Battery(
+                    reserve_battery=state.CONFIG.DRONE_RESERVE_MAX if hasattr(state, "CONFIG") else 60.0,
+                    battery=state.CONFIG.DRONE_PAYLOAD_MAX if hasattr(state, "CONFIG") else 100.0
+                )
+                state.BATTERIES[drone.battery_id] = drone
+            # set departure
+            drone.status = "enroute"
+            drone.target = {"satellite_id": sat.satellite_id}
+            drone.speed_km_per_tick = state.CONFIG.DRONE_SPEED_KM_PER_TICK
+            # compute ETA crudely
+            d_km = haversine_km(drone.position["lat"], drone.position["lon"], sat.position["lat"], sat.position["lon"])
+            ticks = max(1, int(d_km / drone.speed_km_per_tick))
+            drone.eta_ticks = ticks
+            launched.append(drone.battery_id)
+            emit_event(state.SOCKETIO, "drone.launched", {
+                "battery_id": drone.battery_id, "target": drone.target, "eta": ticks
+            })
+    return jsonify({"ok": True, "launched": launched})
+
+--- END OF FILE ---
+
+
+--- FILE: backend/routes/__init__.py ---
+
+--- END OF FILE ---
+
+
+--- FILE: backend/routes/state.py ---
+from flask import Blueprint, jsonify
+from core.state import snapshot
+
+bp = Blueprint("state", __name__)
+
+@bp.get("/state")
+def get_state():
+    return jsonify(snapshot())
+
+--- END OF FILE ---
+
+
+--- FILE: backend/routes/smoke.py ---
+from flask import Blueprint, request, jsonify
+from core.smoke_consumer import start_smoke, stop_smoke
+
+bp = Blueprint("smoke", __name__)
+
+@bp.post("/smoke/start")
+def start():
+    cfg = request.get_json(force=True)
+    start_smoke(qps=cfg.get("qps", 30), burst=cfg.get("burst", 10))
+    return jsonify({"ok": True})
+
+@bp.post("/smoke/stop")
+def stop():
+    stop_smoke()
+    return jsonify({"ok": True})
+
+--- END OF FILE ---
+
