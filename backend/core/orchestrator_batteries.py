@@ -15,6 +15,8 @@ from . import state
 from config import CONFIG
 from events import emit_event
 from utils.geo import haversine_km
+from .economics import ECONOMICS
+
 
 def _nearest_satellite(from_lat, from_lon, candidates):
     """Find nearest satellite from given position"""
@@ -301,6 +303,13 @@ def route(socketio):
                         drone.status = "at_earth"
                         drone.battery = CONFIG.DRONE_PAYLOAD_MAX
                         drone.reserve_battery = CONFIG.DRONE_RESERVE_MAX
+                        ECONOMICS.process_energy_transfer(
+                            from_sat=None,
+                            to_drone=drone,
+                            amount=CONFIG.DRONE_PAYLOAD_MAX,
+                            transfer_type="earth_recharge",
+                            socketio=socketio
+                        )
                         drone.target = None
                         emit_event(socketio, "drone.recharged", {
                             "battery_id": drone.battery_id
@@ -400,6 +409,16 @@ def route(socketio):
                 if give > 0:
                     drone.battery -= give
                     sat.energy_amount += give
+                    
+                    # Process transaction
+                    ECONOMICS.process_energy_transfer(
+                        from_sat=None,  # Drone is GIVING to satellite (drone paid at Earth)
+                        to_drone=drone,
+                        amount=give,
+                        transfer_type="charge",
+                        socketio=socketio
+                    )
+                    
                     emit_event(socketio, "drone.charged", {
                         "battery_id": drone.battery_id,
                         "satellite_id": sat.satellite_id,
@@ -445,6 +464,16 @@ def route(socketio):
                 if take > 0:
                     drone.battery += take
                     sat.energy_amount -= take
+                    
+                    # Process transaction - drone pays satellite
+                    ECONOMICS.process_energy_transfer(
+                        from_sat=sat,
+                        to_drone=drone,
+                        amount=take,
+                        transfer_type="harvest",
+                        socketio=socketio
+                    )
+                    
                     emit_event(socketio, "drone.harvested", {
                         "battery_id": drone.battery_id,
                         "satellite_id": sat.satellite_id,

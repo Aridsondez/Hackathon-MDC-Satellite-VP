@@ -26,6 +26,16 @@ class Satellite(BaseModel):
     })
     giving_energy: str = "idle"
 
+
+    owner_wallet: str = Field(default_factory=lambda: f"wallet-{uuid.uuid4().hex[:12]}")
+    company_name: str = Field(default_factory=lambda: random.choice([
+        "OrbitPower Inc", "SkyGrid Energy", "SolarSat Systems", "NexGen Space"
+    ]))
+    energy_price_per_unit: float = Field(default=0.05)  
+    total_revenue: float = 0.0
+    total_energy_sold: float = 0.0
+    total_energy_purchased: float = 0.0
+
 class Battery(BaseModel):
     battery_id: str = Field(default_factory=lambda: uid("bat"))
     reserve_battery: float
@@ -38,3 +48,30 @@ class Battery(BaseModel):
     route: List[str] = Field(default_factory=list) 
     home_base: Dict[str, float] = Field(default_factory=lambda: {"lat":0.0,"lon":0.0,"alt":0.0})
     dwell_ticks: int = 0   
+
+    owner_wallet: str = Field(default_factory=lambda: f"wallet-{uuid.uuid4().hex[:12]}")
+    company_name: str = Field(default_factory=lambda: random.choice([
+        "DroneFleet Co", "PowerShuttle Ltd", "Orbital Logistics", "Battery Express"
+    ]))
+    total_spent: float = 0.0
+    total_energy_bought: float = 0.0
+
+class Transaction(BaseModel):
+    transaction_id: str = Field(default_factory=lambda: uid("txn"))
+    timestamp: float = Field(default_factory=time.time)
+    
+    # Transaction details
+    from_entity_id: str  # satellite or "earth"
+    from_company: str
+    from_wallet: str
+    
+    to_entity_id: str  # drone battery_id
+    to_company: str
+    to_wallet: str
+    
+    energy_amount: float
+    price_per_unit: float
+    total_cost: float  # in SOL
+    
+    transaction_type: str  # "charge" or "harvest"
+    status: str = "completed"  # "pending", "completed", "failed"

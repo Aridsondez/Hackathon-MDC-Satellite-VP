@@ -12,7 +12,7 @@ class Config:
     DEFAULT_QPS: int = 30
     
     # Satellite task limits
-    MAX_TASKS_PER_SAT: int = 25
+    MAX_TASKS_PER_SAT: int = 30
     MIN_ENERGY_TO_ACCEPT: float = 10
     TASK_ENERGY_RATE: float = 0.10              
     TASK_PROGRESS_RATE: float = 0.02        

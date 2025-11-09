@@ -38,6 +38,8 @@ def seed_state():
     for s in sats:
         s.position["lon"] = random.uniform(-180, 180)
         s.position["lat"] = random.uniform(-60, 60)
+        # Set varied base pricing
+        s.energy_price_per_unit = random.uniform(0.03, 0.08)
     
     # Create 2 standby drones at Earth (ready for auto-dispatch)
     bats = [

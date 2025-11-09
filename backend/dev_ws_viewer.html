@@ -2,87 +2,719 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>VPP Live Viewer</title>
+  <title>VPP Live Viewer - Economic Dashboard</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 16px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    tr.low { background: #fff4f4; }
-    pre { max-height: 200px; overflow: auto; background:#111; color:#0f0; padding:8px; }
+    body { 
+      font-family: system-ui, sans-serif; 
+      margin: 16px; 
+      background: #0a0a0a;
+      color: #e0e0e0;
+    }
+    h2, h3 { color: #00ff88; }
+    
+    .container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    
+    table { 
+      border-collapse: collapse; 
+      width: 100%; 
+      margin-top: 12px;
+      background: #1a1a1a;
+    }
+    th { 
+      background: #2a2a2a;
+      color: #00ff88;
+      padding: 10px;
+      text-align: left;
+      border: 1px solid #333;
+    }
+    td { 
+      border: 1px solid #333; 
+      padding: 8px; 
+      text-align: left; 
+    }
+    tr.low { background: #3a1a1a; }
+    tr:hover { background: #252525; }
+    tr.clickable { cursor: pointer; }
+    
+    .economic-panel {
+      background: #1a1a1a;
+      border: 2px solid #00ff88;
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 16px;
+    }
+    
+    .metric-card {
+      background: #2a2a2a;
+      border-left: 4px solid #00ff88;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 4px;
+    }
+    
+    .metric-card.warning {
+      border-left-color: #ffd700;
+    }
+    
+    .metric-card.danger {
+      border-left-color: #ff6b6b;
+    }
+    
+    .metric-value {
+      font-size: 24px;
+      font-weight: bold;
+      color: #00ff88;
+    }
+    
+    .metric-label {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+    }
+    
+    pre { 
+      max-height: 200px; 
+      overflow: auto; 
+      background: #111; 
+      color: #0f0; 
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid #333;
+    }
+    
+    .transaction-feed {
+      background: #1a1a1a;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #333;
+    }
+    
+    .transaction-item {
+      background: #2a2a2a;
+      padding: 10px;
+      margin-bottom: 8px;
+      border-radius: 4px;
+      border-left: 3px solid #00ff88;
+      font-size: 12px;
+    }
+    
+    .transaction-item.harvest {
+      border-left-color: #ffd700;
+    }
+    
+    .transaction-item.earth {
+      border-left-color: #4ecdc4;
+    }
+    
+    .sol-amount {
+      color: #ffd700;
+      font-weight: bold;
+    }
+    
+    .company-name {
+      color: #00ff88;
+      font-weight: bold;
+    }
+    
+    button {
+      background: #00ff88;
+      color: #000;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      margin-right: 10px;
+    }
+    
+    button:hover {
+      background: #00dd77;
+    }
+    
+    button.danger {
+      background: #ff6b6b;
+    }
+    
+    button.danger:hover {
+      background: #ff5555;
+    }
+    
+    .leaderboard {
+      background: #2a2a2a;
+      padding: 12px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+    }
+    
+    .leaderboard-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px;
+      margin-bottom: 6px;
+      background: #1a1a1a;
+      border-radius: 4px;
+    }
+    
+    .rank {
+      background: #ffd700;
+      color: #000;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 11px;
+    }
+    
+    /* Modal styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.8);
+    }
+    
+    .modal-content {
+      background-color: #1a1a1a;
+      margin: 10% auto;
+      padding: 20px;
+      border: 2px solid #00ff88;
+      border-radius: 8px;
+      width: 90%;
+      max-width: 500px;
+    }
+    
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .close {
+      color: #888;
+      font-size: 28px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    
+    .close:hover {
+      color: #fff;
+    }
+    
+    .form-group {
+      margin-bottom: 15px;
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: 5px;
+      color: #00ff88;
+      font-weight: bold;
+    }
+    
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 8px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+    
+    .form-group input:focus, .form-group select:focus {
+      outline: none;
+      border-color: #00ff88;
+    }
   </style>
 </head>
 <body>
-  <h2>Satellite VPP — Live Viewer</h2>
-  <p>Port: <b>5001</b>. Open console for raw event logs. Below table updates every tick.</p>
-  <button id="btnState">Refresh Snapshot</button>
-  <table id="tbl">
-    <thead><tr><th>Sat</th><th>Energy</th><th>Tasks</th><th>Giving</th><th>Pos</th></tr></thead>
-    <tbody></tbody>
-  </table>
-  <h3>Drones</h3>
-<table id="tbld">
-  <thead><tr><th>ID</th><th>Status</th><th>Payload</th><th>Reserve</th><th>Target</th><th>ETA</th></tr></thead>
-  <tbody></tbody>
-</table>
-  <h3>Events</h3>
+  <h2>🛰️ Satellite VPP — Economic Dashboard</h2>
+  <p>Port: <b>5001</b>. Real-time energy marketplace powered by Solana.</p>
+  
+  <div style="margin-bottom: 16px;">
+    <button id="btnState">🔄 Refresh State</button>
+    <button id="btnEconomics">💰 Refresh Economics</button>
+    <button id="btnLaunchDrone">🚀 Launch Drones</button>
+    <button id="btnSmokeStart">▶️ Start Load Test</button>
+    <button id="btnSmokeStop" class="danger">⛔ Stop Load Test</button>
+  </div>
+
+  <!-- Drone Launch Modal -->
+  <div id="launchModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="margin: 0;">🚀 Launch Drones to Satellite</h3>
+        <span class="close" id="closeModal">&times;</span>
+      </div>
+      <div class="form-group">
+        <label for="droneCount">Number of Drones:</label>
+        <input type="number" id="droneCount" min="1" max="10" value="1" />
+      </div>
+      <div class="form-group">
+        <label for="targetSatellite">Target Satellite:</label>
+        <select id="targetSatellite">
+          <option value="">-- Select a satellite --</option>
+        </select>
+      </div>
+      <div style="margin-top: 20px;">
+        <button id="btnConfirmLaunch">🚀 Launch</button>
+        <button id="btnCancelLaunch" class="danger">Cancel</button>
+      </div>
+      <div id="launchResult" style="margin-top: 15px; padding: 10px; background: #2a2a2a; border-radius: 4px; display: none;"></div>
+    </div>
+  </div>
+
+  <!-- Economic Overview -->
+  <div class="economic-panel">
+    <h3>💎 Economic Overview</h3>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+      <div class="metric-card">
+        <div class="metric-label">Total Volume</div>
+        <div class="metric-value" id="totalVolume">0.0000</div>
+        <div style="font-size: 11px; color: #888;">SOL</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Transactions</div>
+        <div class="metric-value" id="totalTxns">0</div>
+      </div>
+      <div class="metric-card warning">
+        <div class="metric-label">Avg Price</div>
+        <div class="metric-value" id="avgPrice">0.0000</div>
+        <div style="font-size: 11px; color: #888;">SOL/unit</div>
+      </div>
+      <div class="metric-card danger">
+        <div class="metric-label">Energy Traded</div>
+        <div class="metric-value" id="energyTraded">0</div>
+        <div style="font-size: 11px; color: #888;">units</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- Satellites Table -->
+    <div>
+      <h3>🛰️ Satellites <span style="font-size: 12px; color: #888;">(click row to launch drones)</span></h3>
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Company</th>
+            <th>Energy</th>
+            <th>Price/Unit</th>
+            <th>Revenue</th>
+            <th>Tasks</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Drones Table -->
+    <div>
+      <h3>🚁 Drones</h3>
+      <table id="tbld">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Company</th>
+            <th>Status</th>
+            <th>Payload</th>
+            <th>Spent</th>
+            <th>Target</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Leaderboards -->
+  <div class="container" style="margin-top: 16px;">
+    <div class="economic-panel">
+      <h3>🏆 Top Earning Satellites</h3>
+      <div id="topEarners" class="leaderboard">
+        <div style="color: #666;">Loading...</div>
+      </div>
+    </div>
+
+    <div class="economic-panel">
+      <h3>💸 Top Spending Drones</h3>
+      <div id="topSpenders" class="leaderboard">
+        <div style="color: #666;">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Efficiency Metrics -->
+  <div class="economic-panel">
+    <h3>⚡ Efficiency Analysis</h3>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+      <div>
+        <h4 style="color: #00ff88; margin: 0 0 8px 0;">Most Efficient Satellite</h4>
+        <div id="mostEfficient" style="background: #2a2a2a; padding: 12px; border-radius: 4px;">
+          <div style="color: #666;">No data yet</div>
+        </div>
+      </div>
+      <div>
+        <h4 style="color: #ff6b6b; margin: 0 0 8px 0;">Least Efficient Satellite</h4>
+        <div id="leastEfficient" style="background: #2a2a2a; padding: 12px; border-radius: 4px;">
+          <div style="color: #666;">No data yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transaction Feed -->
+  <h3>📊 Live Transaction Feed</h3>
+  <div class="transaction-feed" id="txnFeed">
+    <div style="color: #666; text-align: center;">Waiting for transactions...</div>
+  </div>
+
+  <!-- Event Log -->
+  <h3>📝 System Events</h3>
   <pre id="log"></pre>
 
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<script>
-  const log = (m) => {
-    const el = document.getElementById('log');
-    el.textContent = `[${new Date().toLocaleTimeString()}] ${m}\n` + el.textContent;
-  };
+  <script>
+    const BASE = 'http://localhost:5001';
+    const socket = io(BASE, { transports: ['polling'] });
+    let currentSatellites = [];
 
-  // If you serve the viewer via Flask (/viewer), you can also do: const BASE = '';
-  const BASE = 'http://localhost:5001';
+    const log = (m) => {
+      const el = document.getElementById('log');
+      el.textContent = `[${new Date().toLocaleTimeString()}] ${m}\n` + el.textContent;
+    };
 
-  // 1) Use default namespace and force polling (Werkzeug-friendly)
-  const socket = io(BASE, { transports: ['polling'] });
+    socket.on('connect', () => log('Socket.IO connected (polling)'));
+    socket.on('disconnect', () => log('Socket.IO disconnected'));
 
-  socket.on('connect', () => log('Socket.IO connected (polling)'));
-  socket.on('disconnect', () => log('Socket.IO disconnected'));
+    // Listen for transaction events
+    socket.on('transaction.completed', payload => {
+      log(`💰 Transaction: ${payload.from} → ${payload.to} | ${payload.amount.toFixed(2)} units @ ${payload.cost_sol.toFixed(4)} SOL`);
+      refreshEconomics();
+    });
 
-  ['tick','task.assigned','task.completed','alert.low_energy',
-   'sat.energy_transfer_started','drone.launched','drone.charged']
-   .forEach(evt => socket.on(evt, payload => log(`${evt}: ${JSON.stringify(payload)}`)));
+    ['tick','task.assigned','task.completed','alert.low_energy',
+     'drone.launched','drone.charged','drone.harvested']
+     .forEach(evt => socket.on(evt, payload => log(`${evt}: ${JSON.stringify(payload)}`)));
 
-  // 2) Use BASE for fetch (fixes "url is not defined")
-  async function refresh() {
-    const res = await fetch(BASE + '/api/state');
-    const data = await res.json();
-    const tbody = document.querySelector('#tbl tbody');
-    tbody.innerHTML = '';
-    (data.satellites || []).forEach(s => {
-      const tr = document.createElement('tr');
-      if (s.energy_amount < 25) tr.classList.add('low');
-      tr.innerHTML = `
-        <td>${s.satellite_id}</td>
-        <td>${s.energy_amount.toFixed(1)}</td>
-        <td>${s.current_tasks.length}</td>
-        <td>${s.giving_energy}</td>
-        <td>${s.position.lat.toFixed(1)}, ${s.position.lon.toFixed(1)}</td>`;
-      tbody.appendChild(tr);
-      const tbd = document.querySelector('#tbld tbody');
+    async function refreshState() {
+      try {
+        const res = await fetch(BASE + '/api/state');
+        const data = await res.json();
+        currentSatellites = data.satellites || [];
+        
+        // Update Satellites Table
+        const tbody = document.querySelector('#tbl tbody');
+        tbody.innerHTML = '';
+        currentSatellites.forEach(s => {
+          const tr = document.createElement('tr');
+          tr.classList.add('clickable');
+          if (s.energy_amount < 25) tr.classList.add('low');
+          const utilizationPct = ((s.energy_amount / s.max_energy) * 100).toFixed(0);
+          tr.innerHTML = `
+            <td style="font-family: monospace; font-size: 11px;">${s.satellite_id}</td>
+            <td><span class="company-name">${s.company_name || 'Unknown'}</span></td>
+            <td>${s.energy_amount.toFixed(1)} <span style="color: #666;">/ ${s.max_energy}</span> (${utilizationPct}%)</td>
+            <td><span class="sol-amount">${(s.energy_price_per_unit || 0).toFixed(4)} SOL</span></td>
+            <td><span class="sol-amount">${(s.total_revenue || 0).toFixed(4)} SOL</span></td>
+            <td>${s.current_tasks.length}</td>`;
+          
+          // Make row clickable to launch drones
+          tr.addEventListener('click', () => {
+            openLaunchModal(s.satellite_id);
+          });
+          
+          tbody.appendChild(tr);
+        });
+
+        // Update satellite dropdown in modal
+        updateSatelliteDropdown();
+
+        // Update Drones Table
+        const tbd = document.querySelector('#tbld tbody');
         tbd.innerHTML = '';
         (data.batteries || []).forEach(b => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${b.battery_id}</td>
-            <td>${b.status}</td>
-            <td>${b.battery.toFixed(1)}</td>
-            <td>${b.reserve_battery.toFixed(1)}</td>
-            <td>${b.target ? (b.target.satellite_id || (b.target.earth ? 'earth' : '')) : ''}</td>
-            <td>${b.eta_ticks || 0}</td>`;
-        tbd.appendChild(tr);
+          const tr = document.createElement('tr');
+          const statusColor = {
+            'charging': '#00ff88',
+            'at_earth': '#4ecdc4',
+            'harvesting': '#ffd700',
+            'enroute': '#888',
+            'returning': '#ff6b6b'
+          }[b.status] || '#888';
+          
+          tr.innerHTML = `
+            <td style="font-family: monospace; font-size: 11px;">${b.battery_id}</td>
+            <td><span class="company-name">${b.company_name || 'Unknown'}</span></td>
+            <td><span style="color: ${statusColor};">●</span> ${b.status}</td>
+            <td>${b.battery.toFixed(1)} <span style="color: #666;">/ ${b.reserve_battery.toFixed(0)}</span></td>
+            <td><span class="sol-amount">${(b.total_spent || 0).toFixed(4)} SOL</span></td>
+            <td style="font-size: 11px;">${b.target ? (b.target.satellite_id || (b.target.earth ? '🌍 Earth' : '')) : '-'}</td>`;
+          tbd.appendChild(tr);
         });
-    });
-  }
-  
-  document.getElementById('btnState').onclick = refresh;
-  socket.on('tick', refresh);
-  refresh();
-</script>
+      } catch (err) {
+        log('Error fetching state: ' + err.message);
+      }
+    }
 
+    function updateSatelliteDropdown() {
+      const select = document.getElementById('targetSatellite');
+      const modal = document.getElementById('launchModal');
+      
+      // Don't update dropdown if modal is open
+      if (modal.style.display === 'block') {
+        return;
+      }
+      
+      select.innerHTML = '<option value="">-- Select a satellite --</option>';
+      currentSatellites.forEach(s => {
+        const option = document.createElement('option');
+        option.value = s.satellite_id;
+        const energyPct = ((s.energy_amount / s.max_energy) * 100).toFixed(0);
+        option.textContent = `${s.company_name || s.satellite_id} (${energyPct}% energy)`;
+        select.appendChild(option);
+      });
+    }
+
+    function openLaunchModal(satelliteId = null) {
+      const modal = document.getElementById('launchModal');
+      const select = document.getElementById('targetSatellite');
+      const resultDiv = document.getElementById('launchResult');
+      
+      modal.style.display = 'block';
+      resultDiv.style.display = 'none';
+      
+      if (satelliteId) {
+        select.value = satelliteId;
+      }
+    }
+
+    function closeLaunchModal() {
+      const modal = document.getElementById('launchModal');
+      modal.style.display = 'none';
+    }
+
+    async function launchDrones() {
+      const count = parseInt(document.getElementById('droneCount').value);
+      const targetSatelliteId = document.getElementById('targetSatellite').value;
+      const resultDiv = document.getElementById('launchResult');
+      
+      if (!targetSatelliteId) {
+        resultDiv.style.display = 'block';
+        resultDiv.style.background = '#3a1a1a';
+        resultDiv.style.borderLeft = '4px solid #ff6b6b';
+        resultDiv.innerHTML = '⚠️ Please select a target satellite';
+        return;
+      }
+
+      try {
+        const res = await fetch(BASE + '/api/drones/launch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            count: count,
+            target_satellite_id: targetSatelliteId
+          })
+        });
+        
+        const data = await res.json();
+        
+        if (res.ok) {
+          resultDiv.style.display = 'block';
+          resultDiv.style.background = '#1a3a1a';
+          resultDiv.style.borderLeft = '4px solid #00ff88';
+          resultDiv.innerHTML = `✅ Successfully launched ${count} drone(s) to ${targetSatelliteId}`;
+          log(`🚀 Launched ${count} drone(s) to ${targetSatelliteId}`);
+          
+          setTimeout(() => {
+            closeLaunchModal();
+          }, 2000);
+        } else {
+          throw new Error(data.error || 'Launch failed');
+        }
+      } catch (err) {
+        resultDiv.style.display = 'block';
+        resultDiv.style.background = '#3a1a1a';
+        resultDiv.style.borderLeft = '4px solid #ff6b6b';
+        resultDiv.innerHTML = `❌ Error: ${err.message}`;
+        log('Error launching drones: ' + err.message);
+      }
+    }
+
+    async function refreshEconomics() {
+      try {
+        const res = await fetch(BASE + '/api/economics/metrics');
+        const data = await res.json();
+        
+        // Update Overview Cards
+        document.getElementById('totalVolume').textContent = (data.total_volume_sol || 0).toFixed(4);
+        document.getElementById('totalTxns').textContent = data.total_transactions || 0;
+        
+        // Calculate average price from recent transactions
+        const avgPrice = data.recent_transactions?.length > 0 
+          ? (data.recent_transactions.reduce((sum, t) => sum + (t.cost / Math.max(t.amount, 1)), 0) / data.recent_transactions.length)
+          : 0;
+        document.getElementById('avgPrice').textContent = avgPrice.toFixed(4);
+        
+        // Calculate total energy traded
+        const energyTraded = data.recent_transactions?.reduce((sum, t) => sum + t.amount, 0) || 0;
+        document.getElementById('energyTraded').textContent = energyTraded.toFixed(0);
+
+        // Update Top Earners
+        const earnersDiv = document.getElementById('topEarners');
+        if (data.top_earning_satellites?.length > 0) {
+          earnersDiv.innerHTML = data.top_earning_satellites.map((sat, idx) => `
+            <div class="leaderboard-item">
+              <div>
+                <span class="rank">#${idx + 1}</span>
+                <span class="company-name">${sat.company}</span>
+                <div style="font-size: 10px; color: #666; margin-top: 4px;">${sat.energy_sold.toFixed(0)} units sold</div>
+              </div>
+              <div>
+                <span class="sol-amount">${sat.revenue.toFixed(4)} SOL</span>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          earnersDiv.innerHTML = '<div style="color: #666;">No earnings yet</div>';
+        }
+
+        // Update Top Spenders
+        const spendersDiv = document.getElementById('topSpenders');
+        if (data.top_spending_drones?.length > 0) {
+          spendersDiv.innerHTML = data.top_spending_drones.map((drone, idx) => `
+            <div class="leaderboard-item">
+              <div>
+                <span class="rank">#${idx + 1}</span>
+                <span class="company-name">${drone.company}</span>
+                <div style="font-size: 10px; color: #666; margin-top: 4px;">${drone.energy_bought.toFixed(0)} units bought</div>
+              </div>
+              <div>
+                <span class="sol-amount">${drone.spent.toFixed(4)} SOL</span>
+              </div>
+            </div>
+          `).join('');
+        } else {
+          spendersDiv.innerHTML = '<div style="color: #666;">No spending yet</div>';
+        }
+
+        // Update Efficiency Metrics
+        const mostEffDiv = document.getElementById('mostEfficient');
+        if (data.most_efficient_satellite) {
+          const eff = data.most_efficient_satellite;
+          mostEffDiv.innerHTML = `
+            <div class="company-name">${eff.company}</div>
+            <div style="font-size: 20px; color: #00ff88; margin: 8px 0;">
+              ${eff.efficiency.toFixed(2)} units/SOL
+            </div>
+            <div style="font-size: 11px; color: #888;">
+              Revenue: ${eff.revenue.toFixed(4)} SOL
+            </div>
+          `;
+        }
+
+        const leastEffDiv = document.getElementById('leastEfficient');
+        if (data.least_efficient_satellite) {
+          const eff = data.least_efficient_satellite;
+          leastEffDiv.innerHTML = `
+            <div class="company-name">${eff.company}</div>
+            <div style="font-size: 20px; color: #ff6b6b; margin: 8px 0;">
+              ${eff.efficiency.toFixed(2)} units/SOL
+            </div>
+            <div style="font-size: 11px; color: #888;">
+              Revenue: ${eff.revenue.toFixed(4)} SOL
+            </div>
+          `;
+        }
+
+        // Update Transaction Feed
+        const txnFeed = document.getElementById('txnFeed');
+        if (data.recent_transactions?.length > 0) {
+          txnFeed.innerHTML = data.recent_transactions.slice().reverse().map(txn => {
+            const txnClass = txn.type === 'harvest' ? 'harvest' : 
+                           txn.type === 'earth_recharge' ? 'earth' : '';
+            const typeIcon = txn.type === 'harvest' ? '⚡' : 
+                           txn.type === 'earth_recharge' ? '🌍' : '🔋';
+            const timestamp = new Date(txn.timestamp * 1000).toLocaleTimeString();
+            
+            return `
+              <div class="transaction-item ${txnClass}">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                  <span>${typeIcon} ${txn.from} → ${txn.to}</span>
+                  <span class="sol-amount">${txn.cost.toFixed(4)} SOL</span>
+                </div>
+                <div style="font-size: 10px; color: #888;">
+                  ${txn.amount.toFixed(2)} units • ${timestamp}
+                </div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          txnFeed.innerHTML = '<div style="color: #666; text-align: center;">No transactions yet</div>';
+        }
+      } catch (err) {
+        log('Error fetching economics: ' + err.message);
+      }
+    }
+
+    async function startSmoke() {
+      try {
+        await fetch(BASE + '/api/smoke/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({qps: 50, burst: 10})
+        });
+        log('✅ Smoke test started');
+      } catch (err) {
+        log('Error starting smoke: ' + err.message);
+      }
+    }
+
+    async function stopSmoke() {
+      try {
+        await fetch(BASE + '/api/smoke/stop', {method: 'POST'});
+        log('⛔ Smoke test stopped');
+      } catch (err) {
+        log('Error stopping smoke: ' + err.message);
+      }
+    }
+
+    // Button handlers
+    document.getElementById('btnState').onclick = refreshState;
+    document.getElementById('btnEconomics').onclick = refreshEconomics;
+    document.getElementById('btnLaunchDrone').onclick = () => openLaunchModal();
+    document.getElementById('btnSmokeStart').onclick = startSmoke;
+    document.getElementById('btnSmokeStop').onclick = stopSmoke;
+
+    // Modal handlers
+    document.getElementById('closeModal').onclick = closeLaunchModal;
+    document.getElementById('btnCancelLaunch').onclick = closeLaunchModal;
+    document.getElementById('btnConfirmLaunch').onclick = launchDrones;
+
+    // Close modal when clicking outside
+    window.onclick = function(event) {
+      const modal = document.getElementById('launchModal');
+      if (event.target == modal) {
+        closeLaunchModal();
+      }
+    }
+
+    // Auto-refresh on tick
+    socket.on('tick', () => {
+      refreshState();
+      refreshEconomics();
+    });
+
+    // Initial load
+    refreshState();
+    refreshEconomics();
+  </script>
 </body>
 </html>
