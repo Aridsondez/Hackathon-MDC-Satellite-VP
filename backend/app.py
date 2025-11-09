@@ -6,6 +6,7 @@ from routes.smoke import bp as smoke_bp
 from routes.tasks import bp as tasks_bp
 from routes.state import bp as state_bp
 from routes.economics import bp as economics_bp
+from routes.solana import bp as solana_bp
 from core import scheduler
 from seeds.seed_state import seed_state
 from core import state as core_state
@@ -22,6 +23,7 @@ def create_app():
     app.register_blueprint(tasks_bp,   url_prefix="/api")
     app.register_blueprint(state_bp,   url_prefix="/api")
     app.register_blueprint(economics_bp, url_prefix="/api")
+    app.register_blueprint(solana_bp, url_prefix="/api")
     socketio.init_app(app)
     seed_state()
     socketio.init_app(app)

@@ -296,6 +296,12 @@
     </div>
   </div>
 
+  <!-- Solana Integration Status -->
+  <div class="economic-panel" id="solanaPanel" style="display: none;">
+    <h3>⛓️ Solana Devnet Integration</h3>
+    <div id="solanaStatus"></div>
+  </div>
+
   <div class="container">
     <!-- Satellites Table -->
     <div>
@@ -710,11 +716,71 @@
     socket.on('tick', () => {
       refreshState();
       refreshEconomics();
+      refreshSolana(); // ensure Solana panel stays up to date on ticks
     });
 
     // Initial load
     refreshState();
     refreshEconomics();
+
+    // --- Solana status + events (added) ---
+    async function refreshSolana() {
+      try {
+        const res = await fetch(BASE + '/api/solana/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        const panel = document.getElementById('solanaPanel');
+        const statusDiv = document.getElementById('solanaStatus');
+        
+        if (!data.enabled) {
+          panel.style.display = 'none';
+          return;
+        }
+        
+        panel.style.display = 'block';
+        
+        if (data.connected) {
+          statusDiv.innerHTML = `
+            <div style="display:flex;gap:12px;flex-wrap:wrap;">
+              <div class="metric-card">
+                <div class="metric-label">Wallet Balance</div>
+                <div class="metric-value">${(data.balance_sol || 0).toFixed(4)} SOL</div>
+              </div>
+              <div style="font-size: 11px; color: #888; word-break: break-all;">
+                <strong>Address:</strong> ${data.wallet_address}
+              </div>
+            </div>
+            <div style="margin-top:8px;">
+              <a href="${data.faucet_url}" target="_blank" style="color: #00ff88;">
+                🚰 Get Devnet SOL
+              </a>
+            </div>
+          `;
+        } else {
+          statusDiv.innerHTML = `
+            <div style="color: #ff6b6b;">
+              ❌ Not connected to Solana Devnet
+            </div>
+          `;
+        }
+      } catch (err) {
+        console.warn('refreshSolana error', err);
+      }
+    }
+
+    // Listen for Solana transaction events
+    socket.on('solana.transaction', payload => {
+      try {
+        if (!payload || !payload.signature) return;
+        const sig = payload.signature;
+        log(`⛓️ Solana TX: ${sig.substring(0, 16)}... (${(payload.amount_sol || 0).toFixed(6)} SOL)`);
+      } catch (e) { /* ignore */ }
+    });
+
+    // initial poll + periodic refresh
+    refreshSolana();
+    setInterval(refreshSolana, 10000); // refresh every 10s
   </script>
 </body>
 </html>

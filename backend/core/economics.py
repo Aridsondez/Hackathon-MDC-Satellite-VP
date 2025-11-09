@@ -8,6 +8,8 @@ from typing import Dict, List
 from . import state
 from .models import Transaction
 from events import emit_event
+import asyncio
+from .solana_integration import SOLANA
 import time
 
 class EconomicsEngine:
@@ -18,7 +20,7 @@ class EconomicsEngine:
     def calculate_dynamic_price(self, satellite) -> float:
         """
         Dynamic pricing based on satellite energy level
-        Low energy = higher price (scarcity)
+        Low energy = higher price (scarcity)w
         High energy = lower price (abundance)
         """
         base_price = 0.05  # Base SOL per energy unit
@@ -95,7 +97,19 @@ class EconomicsEngine:
             "cost_sol": txn.total_cost,
             "type": transfer_type
         })
-        
+        if txn.total_cost > 0:  # Only record paid transactions
+            asyncio.create_task(
+                SOLANA.record_transaction(
+                    {
+                        "transaction_id": txn.transaction_id,
+                        "total_cost": txn.total_cost,
+                        "energy_amount": amount,
+                        "from": txn.from_company,
+                        "to": txn.to_company
+                    },
+                    socketio
+                )
+            )
         return txn
     
     def get_metrics(self) -> Dict:
